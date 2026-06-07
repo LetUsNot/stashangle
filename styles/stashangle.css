@@ -1,0 +1,21 @@
+.stashangle-badge {
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+}
+
+.stashangle-field select.form-control,
+.stashangle-field select.text-input {
+  width: 100%;
+  color: inherit;
+  background-color: rgba(var(--bs-body-bg-rgb, 33, 37, 41), 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 0.375rem;
+  min-height: calc(1.5em + 0.75rem + 2px);
+  padding: 0.375rem 0.75rem;
+}
+
+.stashangle-field select.form-control option,
+.stashangle-field select.text-input option {
+  color: #212529;
+  background-color: #fff;
+}

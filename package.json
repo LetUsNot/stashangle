@@ -1,0 +1,32 @@
+{
+  "name": "stashangle",
+  "version": "0.1.11",
+  "description": "Stash plugin for marker-based rotation transforms.",
+  "author": "LetUsNot",
+  "license": "AGPL-3.0-or-later",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LetUsNot/stashangle.git"
+  },
+  "homepage": "https://github.com/LetUsNot/stashangle#readme",
+  "bugs": {
+    "url": "https://github.com/LetUsNot/stashangle/issues"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "deploy": "node build.mjs && node scripts/deploy.mjs",
+    "test": "vitest run --environment jsdom"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.25.5",
+    "jsdom": "^29.1.1",
+    "typescript": "^5.9.2",
+    "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}
