@@ -1,0 +1,34 @@
+name: Stashangle
+description: Apply rotate-and-scale transforms during scene marker playback.
+version: 0.1.11
+url: https://github.com/LetUsNot/stashangle
+
+ui:
+  javascript:
+    - ./dist/ui.js
+  css:
+    - ./dist/ui.css
+  assets:
+    "/": .
+
+exec:
+  - py
+  - "-3"
+  - "{pluginDir}/tasks/stashangle_storage.py"
+interface: raw
+
+tasks:
+  - name: Storage
+    description: Manage marker transform persistence in plugin-local JSON.
+
+hooks:
+  - name: Cleanup deleted marker transform
+    triggeredBy:
+      - SceneMarker.Destroy.Post
+    defaultArgs:
+      mode: removeMarkerById
+  - name: Claim pending transform on create
+    triggeredBy:
+      - SceneMarker.Create.Post
+    defaultArgs:
+      mode: claimPending

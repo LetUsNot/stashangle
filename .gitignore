@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.env
+
+# Build and output
+dist/
+build/
+*.log
+.DS_Store
+Thumbs.db
+
+# Local upstream Stash clone for development reference
+reference/
+
+# Runtime sidecar data (created in the installed plugin directory)
+pending-create.json
