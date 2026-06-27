@@ -3,7 +3,7 @@ import { runPluginStorageOperation } from "./pluginGraphql";
 import { runPluginTaskAndWait } from "./pluginTaskRunner";
 import {
   CLAIM_TIMEOUT_MS,
-  PendingEntry,
+  MarkerRange,
   PLUGIN_ID,
   SceneMarkerLike,
   TaskResult,
@@ -18,18 +18,31 @@ interface SceneCacheEntry {
   state: LoadState;
   transforms: TransformMap;
   rangesSignature: string;
+  cachedRanges: MarkerRange[];
 }
+
+const MAX_SCENE_CACHE = 20;
 
 const sceneCache = new Map<string, SceneCacheEntry>();
+const sceneCacheOrder: string[] = [];
 const inflightLoads = new Map<string, Promise<void>>();
 const claimTimeouts = new Map<string, number>();
-let useTaskPollOnly = false;
 
-function showError(message: string): void {
-  console.warn(`[Stashangle] ${message}`);
+function touchSceneCache(sceneId: string): void {
+  const existingIndex = sceneCacheOrder.indexOf(sceneId);
+  if (existingIndex >= 0) {
+    sceneCacheOrder.splice(existingIndex, 1);
+  }
+  sceneCacheOrder.push(sceneId);
+  while (sceneCacheOrder.length > MAX_SCENE_CACHE) {
+    const evictId = sceneCacheOrder.shift();
+    if (evictId) {
+      sceneCache.delete(evictId);
+    }
+  }
 }
 
-function warnOnce(message: string): void {
+function logWarn(message: string): void {
   console.warn(`[Stashangle] ${message}`);
 }
 
@@ -72,32 +85,10 @@ async function loadTransformsFromAsset(sceneId: string): Promise<TransformMap> {
   }
 }
 
-async function loadPendingFromAsset(): Promise<Record<string, { transform?: string }>> {
-  try {
-    const response = await fetch(`/plugin/${PLUGIN_ID}/assets/pending-create.json`, {
-      credentials: "include",
-      cache: "no-store"
-    });
-    if (!response.ok) return {};
-    return (await response.json()) as Record<string, { transform?: string }>;
-  } catch {
-    return {};
-  }
-}
-
 async function verifyWriteResult(args: Record<string, unknown>): Promise<void> {
   const sceneId = typeof args.scene_id === "string" ? args.scene_id : null;
   const markerId = typeof args.marker_id === "string" ? args.marker_id : null;
   const mode = args.mode;
-
-  if (mode === "writePending" && sceneId) {
-    const pending = await loadPendingFromAsset();
-    const staged = Boolean(pending[sceneId]?.transform);
-    if (!staged) {
-      throw new Error("Pending transform was not written to plugin storage.");
-    }
-    return;
-  }
 
   if (mode === "setMarker" && sceneId && markerId) {
     let persisted: TransformValue | null = null;
@@ -115,7 +106,34 @@ async function verifyWriteResult(args: Record<string, unknown>): Promise<void> {
 
   if (mode === "claimPending" && sceneId && markerId) {
     const transforms = await loadTransformsFromAsset(sceneId);
+    if (!transforms[markerId]) {
+      throw new Error("Claimed marker transform was not written to plugin storage.");
+    }
+    return;
   }
+}
+
+async function runTaskViaPoll<T = unknown>(
+  api: ReturnType<typeof getPluginApi>,
+  stash: NonNullable<ReturnType<typeof getPluginApi>["utils"]>["StashService"],
+  args: Record<string, unknown>
+): Promise<TaskResult<T>> {
+  const canRunTask =
+    Boolean(api?.GQL?.RunPluginTaskDocument && api?.GQL?.FindJobDocument) ||
+    typeof stash.mutateRunPluginTask === "function";
+  if (!canRunTask) {
+    throw new Error("Plugin task API is unavailable.");
+  }
+
+  await runPluginTaskAndWait(api, args);
+  if (args.mode !== "getScene") {
+    await verifyWriteResult(args);
+  }
+  if (args.mode === "getScene" && typeof args.scene_id === "string") {
+    const transforms = await loadTransformsFromAsset(String(args.scene_id));
+    return { output: { transforms } as T };
+  }
+  return { output: { ok: true } as T };
 }
 
 async function runTask<T = unknown>(args: Record<string, unknown>): Promise<TaskResult<T>> {
@@ -125,73 +143,44 @@ async function runTask<T = unknown>(args: Record<string, unknown>): Promise<Task
     throw new Error("StashService is unavailable.");
   }
 
-  let via = "unknown";
-  if (!useTaskPollOnly) {
   try {
     const result = await runPluginStorageOperation(api, args);
-    via =
-      typeof stash.mutateRunPluginOperation === "function"
-        ? "mutateRunPluginOperation"
-        : api?.GQL?.RunPluginOperationDocument
-          ? "RunPluginOperationDocument"
-          : api?.libraries?.Apollo?.gql
-            ? "apollo-gql"
-            : "graphql-fetch";
     const parsed = parseTaskResult<T>(result);
     if (parsed.error) {
       throw new Error(parsed.error);
     }
-    if (parsed.output != null || parsed.error) {
+    if (parsed.output != null) {
       return parsed;
     }
-    useTaskPollOnly = true;
-  } catch (operationError) {
-    useTaskPollOnly = true;
-  }
+  } catch {
+    // Fall through to task polling for this call only.
   }
 
-  const canRunTask =
-    Boolean(api?.GQL?.RunPluginTaskDocument && api?.GQL?.FindJobDocument) ||
-    typeof stash.mutateRunPluginTask === "function";
-  if (canRunTask) {
-    try {
-      await runPluginTaskAndWait(api, args);
-      if (args.mode !== "getScene") {
-        await verifyWriteResult(args);
-      }
-      if (args.mode === "getScene" && typeof args.scene_id === "string") {
-        const transforms = await loadTransformsFromAsset(String(args.scene_id));
-        return { output: { transforms } as T };
-      }
-      return { output: { ok: true } as T };
-    } catch (taskError) {
-      if (args.mode !== "getScene") {
-        throw taskError;
-      }
+  try {
+    return await runTaskViaPoll<T>(api, stash, args);
+  } catch (taskError) {
+    if (args.mode === "getScene" && typeof args.scene_id === "string") {
+      const transforms = await loadTransformsFromAsset(String(args.scene_id));
+      return { output: { transforms } as T };
     }
+    throw taskError;
   }
-
-  if (args.mode === "getScene" && typeof args.scene_id === "string") {
-    const transforms = await loadTransformsFromAsset(String(args.scene_id));
-    return { output: { transforms } as T };
-  }
-
-  throw new Error("No plugin execution API available.");
 }
 
 function getOrCreateEntry(sceneId: string): SceneCacheEntry {
   let entry = sceneCache.get(sceneId);
   if (!entry) {
-    entry = { state: "idle", transforms: {}, rangesSignature: "" };
+    entry = { state: "idle", transforms: {}, rangesSignature: "", cachedRanges: [] };
     sceneCache.set(sceneId, entry);
   }
+  touchSceneCache(sceneId);
   return entry;
 }
 
 function setClaimTimeout(sceneId: string): void {
   clearClaimTimeout(sceneId);
   const timer = window.setTimeout(() => {
-    showError("Marker save succeeded but transform persistence timed out.");
+    logWarn("Marker save succeeded but transform persistence timed out.");
     claimTimeouts.delete(sceneId);
   }, CLAIM_TIMEOUT_MS);
   claimTimeouts.set(sceneId, timer);
@@ -217,6 +206,13 @@ export function hasTransforms(sceneId: string): boolean {
 
 export function getCachedTransforms(sceneId: string): TransformMap {
   return { ...(sceneCache.get(sceneId)?.transforms ?? {}) };
+}
+
+export function getCachedTransform(
+  sceneId: string,
+  markerId: string | number
+): TransformValue | undefined {
+  return sceneCache.get(sceneId)?.transforms[String(markerId)];
 }
 
 async function refreshTransformsCache(sceneId: string): Promise<void> {
@@ -261,16 +257,20 @@ export async function loadSceneTransforms(
       entry.state = "loaded";
 
       if (markerIds && markerIds.length > 0) {
-        await runTask({
-          mode: "pruneStale",
-          scene_id: sceneId,
-          marker_ids: markerIds
-        });
+        const markerIdSet = new Set(markerIds);
+        const hasOrphans = Object.keys(entry.transforms).some((key) => !markerIdSet.has(key));
+        if (hasOrphans) {
+          await runTask({
+            mode: "pruneStale",
+            scene_id: sceneId,
+            marker_ids: markerIds
+          });
+        }
       }
     } catch (error) {
       entry.state = "error";
       entry.transforms = {};
-      warnOnce(`Failed to load transforms for scene ${sceneId}: ${String(error)}`);
+      logWarn(`Failed to load transforms for scene ${sceneId}: ${String(error)}`);
     } finally {
       inflightLoads.delete(sceneId);
     }
@@ -289,7 +289,7 @@ export async function stageCreate(sceneId: string, transform: TransformValue | n
       transform
     });
   } catch (error) {
-    warnOnce(`Failed to stage pending transform: ${String(error)}`);
+    logWarn(`Failed to stage pending transform: ${String(error)}`);
   }
 }
 
@@ -312,7 +312,7 @@ export async function completeCreate(sceneId: string, markerId: string): Promise
     return false;
   } catch (error) {
     setClaimTimeout(sceneId);
-    warnOnce(`Failed to claim pending transform: ${String(error)}`);
+    logWarn(`Failed to claim pending transform: ${String(error)}`);
     return false;
   }
 }
@@ -339,8 +339,8 @@ export async function setMarkerTransform(
     }
     await refreshTransformsCache(sceneId);
   } catch (error) {
-    showError("Marker saved but transform persistence failed.");
-    warnOnce(`Persisting marker transform failed: ${String(error)}`);
+    logWarn("Marker saved but transform persistence failed.");
+    logWarn(`Persisting marker transform failed: ${String(error)}`);
   }
 }
 
@@ -354,8 +354,10 @@ export function getSceneRanges(sceneId: string, markers: SceneMarkerLike[], dura
     markers: markers.map((m) => [m.id, m.seconds, m.end_seconds]),
     duration
   });
-  if (entry.rangesSignature !== signature) {
-    entry.rangesSignature = signature;
+  if (entry.rangesSignature === signature) {
+    return entry.cachedRanges;
   }
-  return resolveMarkerRanges(markers, duration);
+  entry.rangesSignature = signature;
+  entry.cachedRanges = resolveMarkerRanges(markers, duration);
+  return entry.cachedRanges;
 }

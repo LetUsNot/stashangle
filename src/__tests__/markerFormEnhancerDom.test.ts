@@ -4,10 +4,12 @@ import {
   mountMarkerFormEnhancer,
   refreshMarkerFormEnhancer
 } from "../markerFormEnhancerDom";
+import { teardownMarkerSubmitGuard } from "../markerFormSubmitGuard";
 
 describe("markerFormEnhancerDom mount lifecycle", () => {
   afterEach(() => {
     destroyMarkerFormEnhancer();
+    teardownMarkerSubmitGuard();
     document.body.innerHTML = "";
   });
 

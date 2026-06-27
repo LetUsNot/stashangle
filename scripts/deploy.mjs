@@ -1,34 +1,29 @@
-import { copyFileSync, cpSync, mkdirSync, rmSync, existsSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const pluginDir = path.join(root, "Stashangle");
 const home = process.env.USERPROFILE ?? process.env.HOME;
 if (!home) {
   throw new Error("USERPROFILE or HOME is required to deploy the plugin.");
 }
 
 const dest = path.join(home, ".stash", "plugins", "Stashangle");
-const distDir = path.join(dest, "dist");
-
-mkdirSync(distDir, { recursive: true });
-
-copyFileSync(path.join(root, "Stashangle.yml"), path.join(dest, "Stashangle.yml"));
-
 const storageDest = path.join(dest, "marker-transforms.json");
-if (!existsSync(storageDest)) {
-  copyFileSync(path.join(root, "marker-transforms.json"), storageDest);
-  console.info("[Stashangle] Initialized marker-transforms.json during deploy");
-} else {
+const preservedStorage = existsSync(storageDest) ? readFileSync(storageDest, "utf8") : null;
+
+mkdirSync(dest, { recursive: true });
+cpSync(pluginDir, dest, { recursive: true, force: true });
+
+if (preservedStorage) {
+  writeFileSync(storageDest, preservedStorage);
   console.info("[Stashangle] Preserved existing marker-transforms.json during deploy");
+} else {
+  console.info("[Stashangle] Initialized marker-transforms.json during deploy");
 }
 
-for (const file of ["ui.js", "ui.css"]) {
-  copyFileSync(path.join(root, "dist", file), path.join(distDir, file));
-}
-
-cpSync(path.join(root, "tasks"), path.join(dest, "tasks"), { recursive: true, force: true });
-
+const distDir = path.join(dest, "dist");
 for (const stale of [
   path.join(dest, "stashangle.js"),
   path.join(dest, "stashangle.css"),
@@ -41,4 +36,4 @@ for (const stale of [
   }
 }
 
-console.info(`[Stashangle] Deployed to ${dest} (dist/ui.js)`);
+console.info(`[Stashangle] Deployed ${pluginDir} -> ${dest}`);
