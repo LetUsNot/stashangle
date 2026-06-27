@@ -13,7 +13,8 @@ env/
 *.env
 
 # Build and output
-dist/
+Stashangle/dist/
+Stashangle/tasks/
 build/
 *.log
 .DS_Store
@@ -22,5 +23,6 @@ Thumbs.db
 # Local upstream Stash clone for development reference
 reference/
 
-# Runtime sidecar data (created in the installed plugin directory)
+# Runtime sidecar data (created in the plugin package / install directory)
 pending-create.json
+Stashangle/pending-create.json

@@ -16,6 +16,8 @@ When you edit a scene marker, you get a **Transform** dropdown:
 
 The transform kicks in when playback enters the marker range and drops off when you leave it. Point markers (no end time) keep the transform until the next marker or the end of the scene.
 
+Markers with a rotation transform show a small badge: **↺** for counter-clockwise, **↻** for clockwise. Badges appear on marker placards in the markers panel and on the video timeline.
+
 Transforms also recompute when you go fullscreen so the scale stays correct for the new player size.
 
 ## Install
@@ -29,12 +31,14 @@ npm install
 npm run build
 ```
 
-Copy the whole plugin folder into your Stash plugins directory:
+Copy the `Stashangle/` folder into your Stash plugins directory:
 
 | OS | Default path |
 |---|---|
 | Linux / macOS | `~/.stash/plugins/Stashangle` |
 | Windows | `%USERPROFILE%\.stash\plugins\Stashangle` |
+
+After `npm run build`, the ready-to-copy plugin package lives at `Stashangle/` in this repo (manifest, `dist/`, `tasks/`, and `marker-transforms.json`).
 
 On Windows you can skip the manual copy step:
 
@@ -63,11 +67,12 @@ npm test
 npm run build
 ```
 
+`npm run build` writes bundled UI assets to `Stashangle/dist/` and syncs `tasks/stashangle_storage.py` into `Stashangle/tasks/`. Copy or deploy that `Stashangle/` folder for local testing.
+
 Tests use Vitest with jsdom. Optional: keep a local Stash checkout at `reference/stash/` for digging into upstream UI code — it's gitignored and not shipped with the plugin.
 
 ## Known quirks
 
-- Marker badges on the timeline are not in yet (planned for a future release).
 - No manual "pause transforms" toggle in the filter panel yet — also planned.
 - If you see a claim-timeout toast after creating a marker, open the marker editor again and hit save.
 

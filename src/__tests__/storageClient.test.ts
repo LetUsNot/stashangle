@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { clearClaimTimeout, completeCreate, loadSceneTransforms } from "../storageClient";
+import {
+  clearClaimTimeout,
+  completeCreate,
+  loadSceneTransforms,
+  setMarkerTransform
+} from "../storageClient";
 
 describe("storage client claim timeout behavior", () => {
   const mutateRunPluginOperation = vi.fn();
@@ -74,6 +79,45 @@ describe("storage client claim timeout behavior", () => {
     expect(warnSpy).not.toHaveBeenCalled();
   });
 
+  it("does not permanently fall back to task polling after one operation failure", async () => {
+    (window as any).PluginApi = {
+      utils: {
+        StashService: {
+          mutateRunPluginOperation
+        }
+      }
+    };
+
+    let operationAttempts = 0;
+    mutateRunPluginOperation.mockImplementation(() => {
+      operationAttempts += 1;
+      if (operationAttempts === 1) {
+        return Promise.reject(new Error("transient"));
+      }
+      return Promise.resolve({ output: { transforms: { "7": "rotate_left_scale" } } });
+    });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ version: 1, scenes: { "retry-a": {} } })
+      })
+    );
+
+    await loadSceneTransforms("retry-a");
+    await loadSceneTransforms("retry-b", undefined, { force: true });
+
+    expect(operationAttempts).toBe(2);
+    expect(mutateRunPluginOperation).toHaveBeenLastCalledWith("Stashangle", {
+      mode: "getScene",
+      scene_id: "retry-b"
+    });
+    expect(mutateRunPluginTask).not.toHaveBeenCalled();
+
+    vi.unstubAllGlobals();
+  });
+
   it("does not call pruneStale when marker ids are empty", async () => {
     mutateRunPluginOperation.mockResolvedValueOnce({ output: { transforms: {} } });
     await loadSceneTransforms("42", []);
@@ -144,6 +188,34 @@ describe("storage client claim timeout behavior", () => {
     );
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("persists marker transform via runPluginOperation", async () => {
+    mutateRunPluginOperation
+      .mockResolvedValueOnce({ output: { saved: true } })
+      .mockResolvedValueOnce({ output: { transforms: { "9": "rotate_left_scale" } } });
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          version: 1,
+          scenes: { "12": { "9": "rotate_left_scale" } }
+        })
+      })
+    );
+
+    await setMarkerTransform("12", "9", "rotate_left_scale");
+
+    expect(mutateRunPluginOperation).toHaveBeenCalledWith("Stashangle", {
+      mode: "setMarker",
+      scene_id: "12",
+      marker_id: "9",
+      transform: "rotate_left_scale"
+    });
+
+    vi.unstubAllGlobals();
   });
 
   it("returns empty transforms from missing asset file", async () => {

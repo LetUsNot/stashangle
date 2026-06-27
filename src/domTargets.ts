@@ -8,7 +8,7 @@ export const DOM_TARGETS = {
   rotateSlider: "#scene-video-filter-panel input[type='range']"
 } as const;
 
-function findDurationInputsInForm(form: HTMLFormElement): HTMLInputElement[] {
+export function findDurationInputsInForm(form: HTMLFormElement): HTMLInputElement[] {
   return Array.from(form.querySelectorAll("input")).filter((node) => {
     if (!(node instanceof HTMLInputElement)) return false;
     const placeholder = node.placeholder.toLowerCase();
@@ -29,7 +29,7 @@ function hasMarkerFieldLabels(form: HTMLFormElement): boolean {
   });
 }
 
-function isMarkerEditForm(node: Element | null): node is HTMLFormElement {
+export function isMarkerEditForm(node: Element | null): node is HTMLFormElement {
   if (!(node instanceof HTMLFormElement)) return false;
   if (!node.isConnected) return false;
 
@@ -123,6 +123,40 @@ export function findMarkerForm(): HTMLFormElement | null {
   }
 
   return null;
+}
+
+export function findMarkersPanelRoots(): HTMLElement[] {
+  const roots = new Set<HTMLElement>();
+
+  for (const id of MARKERS_PANEL_IDS) {
+    const byId = document.getElementById(id);
+    if (byId instanceof HTMLElement) roots.add(byId);
+  }
+
+  for (const el of document.querySelectorAll("[data-rb-event-key='scene-markers-panel']")) {
+    if (!(el instanceof HTMLElement)) continue;
+    if (el.classList.contains("tab-pane")) {
+      roots.add(el);
+      continue;
+    }
+    const pane = el.closest(".tab-pane");
+    roots.add(pane instanceof HTMLElement ? pane : el);
+  }
+
+  for (const el of document.querySelectorAll(".scene-markers-panel")) {
+    if (el instanceof HTMLElement) roots.add(el);
+  }
+
+  if (isMarkersTabActive()) {
+    const activePane = document.querySelector(".scene-tabs .tab-pane.active");
+    if (activePane instanceof HTMLElement) roots.add(activePane);
+  }
+
+  const form = findMarkerForm();
+  const formPane = form?.closest(".tab-pane");
+  if (formPane instanceof HTMLElement) roots.add(formPane);
+
+  return [...roots];
 }
 
 export function findMarkersPanel(): HTMLElement | null {
@@ -242,20 +276,33 @@ export function probeMarkerFormDom(): Record<string, unknown> {
   };
 }
 
-const SCENE_MARKER_ID_PATTERN = /scene_marker\/(\d+)/;
+const SCENE_MARKER_ID_PATTERNS = [
+  /scene_marker\/(\d+)/i,
+  /scene_markers\/(\d+)/i,
+  /\/markers\/(\d+)(?:\/|$|[?#])/i
+] as const;
+
+function matchMarkerIdFromText(text: string): string | null {
+  for (const pattern of SCENE_MARKER_ID_PATTERNS) {
+    const match = text.match(pattern);
+    if (match?.[1]) return match[1];
+  }
+  return null;
+}
 
 export function findMarkerIdFromUrls(root: ParentNode): string | null {
-  for (const el of root.querySelectorAll("[src], [href], source")) {
+  for (const el of root.querySelectorAll("[src], [href], source, [data-preview]")) {
     const candidates = [
       el instanceof HTMLAnchorElement ? el.href : null,
       el instanceof HTMLMediaElement ? el.src : null,
       el.getAttribute("src"),
-      el.getAttribute("href")
+      el.getAttribute("href"),
+      el.getAttribute("data-preview")
     ];
     for (const url of candidates) {
       if (!url) continue;
-      const match = url.match(SCENE_MARKER_ID_PATTERN);
-      if (match?.[1]) return match[1];
+      const markerId = matchMarkerIdFromText(url);
+      if (markerId) return markerId;
     }
   }
   return null;
@@ -266,9 +313,46 @@ export function findMarkerIdFromContent(root: ParentNode): string | null {
   if (fromUrls) return fromUrls;
 
   if (root instanceof Element) {
-    const match = root.innerHTML.match(SCENE_MARKER_ID_PATTERN);
-    if (match?.[1]) return match[1];
+    return matchMarkerIdFromText(root.innerHTML);
   }
+  return null;
+}
+
+export function findPlacardHostForMarkerId(
+  markerId: string,
+  searchRoot: ParentNode = document
+): HTMLElement | null {
+  const tokens = [
+    `scene_marker/${markerId}`,
+    `scene_markers/${markerId}`,
+    `/markers/${markerId}`
+  ];
+
+  for (const el of searchRoot.querySelectorAll(
+    "img[src], video[src], source[src], a[href], [data-preview]"
+  )) {
+    const candidates = [
+      el.getAttribute("src"),
+      el.getAttribute("href"),
+      el.getAttribute("data-preview"),
+      el instanceof HTMLAnchorElement ? el.href : null
+    ];
+    for (const url of candidates) {
+      if (!url || !tokens.some((token) => url.includes(token))) continue;
+
+      const container = el.closest(".wall-item-container");
+      if (container instanceof HTMLElement) return container;
+
+      const wallItem = el.closest(".wall-item");
+      if (wallItem instanceof HTMLElement) {
+        const inner = wallItem.querySelector(".wall-item-container");
+        return inner instanceof HTMLElement ? inner : wallItem;
+      }
+
+      if (el.parentElement instanceof HTMLElement) return el.parentElement;
+    }
+  }
+
   return null;
 }
 

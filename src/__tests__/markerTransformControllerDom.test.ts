@@ -76,7 +76,13 @@ describe("markerTransformControllerDom tab-switch regression", () => {
     mountMarkerTransformController(scene);
     await vi.waitUntil(() => seekedHandler != null, { timeout: 2000 });
 
+    const flushRaf = () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
     seekedHandler?.();
+    await flushRaf();
 
     const media = document.querySelector("#VideoJsPlayer video") as HTMLVideoElement;
     expect(media.getAttribute("data-stashangle-transform")).toBe("active");
@@ -86,6 +92,7 @@ describe("markerTransformControllerDom tab-switch regression", () => {
     media.removeAttribute("data-stashangle-transform");
 
     seekedHandler?.();
+    await flushRaf();
 
     expect(media.getAttribute("data-stashangle-transform")).toBe("active");
   });

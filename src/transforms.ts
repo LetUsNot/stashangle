@@ -1,17 +1,32 @@
+import { TRANSFORM_FLAG_ATTR, VIDEO_PLAYER_ID } from "./constants";
 import { MarkerRange, SceneLike, SceneMarkerLike, TransformValue } from "./types";
 
-const VIDEO_PLAYER_ID = "VideoJsPlayer";
-const TRANSFORM_FLAG_ATTR = "data-stashangle-transform";
+let applyingTransform = false;
+
+export function isApplyingMarkerTransform(): boolean {
+  return applyingTransform;
+}
 
 function getPlayerContainer(): HTMLElement | null {
   return document.getElementById(VIDEO_PLAYER_ID);
 }
 
+function isVisibleMedia(el: HTMLElement): boolean {
+  if (el.offsetWidth <= 0 && el.offsetHeight <= 0) return false;
+  const style = typeof window.getComputedStyle === "function" ? window.getComputedStyle(el) : null;
+  if (style && (style.display === "none" || style.visibility === "hidden")) return false;
+  return true;
+}
+
 function getRenderableMedia(container: HTMLElement): HTMLElement | null {
-  const canvas = container.querySelector("canvas");
-  if (canvas instanceof HTMLElement) return canvas;
   const video = container.querySelector("video");
+  if (video instanceof HTMLElement && isVisibleMedia(video)) return video;
+
+  const canvas = container.querySelector("canvas");
+  if (canvas instanceof HTMLElement && isVisibleMedia(canvas)) return canvas;
+
   if (video instanceof HTMLElement) return video;
+  if (canvas instanceof HTMLElement) return canvas;
   return null;
 }
 
@@ -120,14 +135,19 @@ export function applyMarkerTransform(direction: TransformValue, scene: SceneLike
   const media = getRenderableMedia(player);
   if (!media) return;
 
-  media.style.transform = computeRotateScale(direction, scene);
-  media.setAttribute(TRANSFORM_FLAG_ATTR, "active");
+  applyingTransform = true;
+  try {
+    media.style.transform = computeRotateScale(direction, scene);
+    media.setAttribute(TRANSFORM_FLAG_ATTR, "active");
 
-  if (media.tagName === "CANVAS") {
-    media.style.width = "100%";
-    media.style.height = "100%";
-    media.style.position = "absolute";
-    media.style.top = "0";
+    if (media.tagName === "CANVAS") {
+      media.style.width = "100%";
+      media.style.height = "100%";
+      media.style.position = "absolute";
+      media.style.top = "0";
+    }
+  } finally {
+    applyingTransform = false;
   }
 }
 
@@ -139,8 +159,14 @@ export function resetMarkerTransforms(): void {
 
   const hadActive = media.getAttribute(TRANSFORM_FLAG_ATTR) === "active";
   if (!hadActive) return;
-  media.style.removeProperty("transform");
-  media.removeAttribute(TRANSFORM_FLAG_ATTR);
+
+  applyingTransform = true;
+  try {
+    media.style.removeProperty("transform");
+    media.removeAttribute(TRANSFORM_FLAG_ATTR);
+  } finally {
+    applyingTransform = false;
+  }
 }
 
 function normalizeEnd(marker: SceneMarkerLike, fallbackEnd: number): number {

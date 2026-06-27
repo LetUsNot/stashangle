@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
+import contextlib
 import datetime
 import json
 import os
 import re
 import tempfile
-from typing import Any, Dict, Tuple
+import time
+from typing import Any, Dict, Iterator, Tuple
 
 NUMERIC_ID = re.compile(r"^[0-9]+$")
 TRANSFORMS_FILENAME = "marker-transforms.json"
@@ -23,8 +25,41 @@ def parse_datetime(value: str) -> datetime.datetime:
 def load_json(path: str, fallback: Any) -> Any:
     if not os.path.exists(path):
         return fallback
-    with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except json.JSONDecodeError:
+        timestamp = now_utc().strftime("%Y%m%d%H%M%S")
+        corrupt_path = f"{path}.corrupt.{timestamp}"
+        try:
+            os.replace(path, corrupt_path)
+        except OSError:
+            pass
+        return fallback
+
+
+@contextlib.contextmanager
+def file_lock(path: str, timeout: float = 30.0) -> Iterator[None]:
+    lock_path = f"{path}.lock"
+    start = time.monotonic()
+    lock_fd = None
+    while True:
+        try:
+            lock_fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)
+            break
+        except FileExistsError:
+            if time.monotonic() - start > timeout:
+                raise TimeoutError(f"Could not acquire lock for {path}")
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        try:
+            os.remove(lock_path)
+        except OSError:
+            pass
 
 
 def atomic_write_json(path: str, data: Any) -> None:
@@ -32,7 +67,7 @@ def atomic_write_json(path: str, data: Any) -> None:
     fd, tmp_path = tempfile.mkstemp(prefix=".stashangle-", suffix=".tmp", dir=directory)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2, sort_keys=True)
+            json.dump(data, handle, sort_keys=True, separators=(",", ":"))
         os.replace(tmp_path, path)
     finally:
         if os.path.exists(tmp_path):
@@ -108,8 +143,9 @@ def write_output(output: Any = None, error: str = "") -> None:
 
 def mode_get_scene(args: Dict[str, Any], transforms_path: str) -> Dict[str, Any]:
     scene_id = ensure_numeric_id(args.get("scene_id"), "scene_id")
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    scene_map = store["scenes"].get(scene_id, {})
+    with file_lock(transforms_path):
+        store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+        scene_map = store["scenes"].get(scene_id, {})
     return {"transforms": scene_map}
 
 
@@ -120,42 +156,45 @@ def mode_set_marker(args: Dict[str, Any], transforms_path: str) -> Dict[str, Any
     if transform not in ("rotate_left_scale", "rotate_right_scale"):
         raise ValueError("transform must be rotate_left_scale or rotate_right_scale.")
 
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    scene_map = dict(store["scenes"].get(scene_id, {}))
-    if len(scene_map) >= 500 and marker_id not in scene_map:
-        raise ValueError("max 500 transforms per scene.")
-    scene_map[marker_id] = transform
-    store["scenes"][scene_id] = scene_map
-    atomic_write_json(transforms_path, store)
+    with file_lock(transforms_path):
+        store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+        scene_map = dict(store["scenes"].get(scene_id, {}))
+        if len(scene_map) >= 500 and marker_id not in scene_map:
+            raise ValueError("max 500 transforms per scene.")
+        scene_map[marker_id] = transform
+        store["scenes"][scene_id] = scene_map
+        atomic_write_json(transforms_path, store)
     return {"saved": True}
 
 
 def mode_remove_marker(args: Dict[str, Any], transforms_path: str) -> Dict[str, Any]:
     scene_id = ensure_numeric_id(args.get("scene_id"), "scene_id")
     marker_id = ensure_numeric_id(args.get("marker_id"), "marker_id")
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    scene_map = dict(store["scenes"].get(scene_id, {}))
-    scene_map.pop(marker_id, None)
-    if scene_map:
-        store["scenes"][scene_id] = scene_map
-    else:
-        store["scenes"].pop(scene_id, None)
-    atomic_write_json(transforms_path, store)
+    with file_lock(transforms_path):
+        store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+        scene_map = dict(store["scenes"].get(scene_id, {}))
+        scene_map.pop(marker_id, None)
+        if scene_map:
+            store["scenes"][scene_id] = scene_map
+        else:
+            store["scenes"].pop(scene_id, None)
+        atomic_write_json(transforms_path, store)
     return {"removed": True}
 
 
 def mode_remove_marker_by_id(args: Dict[str, Any], transforms_path: str) -> Dict[str, Any]:
     marker_id = ensure_numeric_id(args.get("marker_id"), "marker_id")
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    for scene_id, scene_map in list(store["scenes"].items()):
-        if marker_id in scene_map:
-            scene_copy = dict(scene_map)
-            scene_copy.pop(marker_id, None)
-            if scene_copy:
-                store["scenes"][scene_id] = scene_copy
-            else:
-                store["scenes"].pop(scene_id, None)
-    atomic_write_json(transforms_path, store)
+    with file_lock(transforms_path):
+        store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+        for scene_id, scene_map in list(store["scenes"].items()):
+            if marker_id in scene_map:
+                scene_copy = dict(scene_map)
+                scene_copy.pop(marker_id, None)
+                if scene_copy:
+                    store["scenes"][scene_id] = scene_copy
+                else:
+                    store["scenes"].pop(scene_id, None)
+        atomic_write_json(transforms_path, store)
     return {"removed": True}
 
 
@@ -166,16 +205,17 @@ def mode_prune_stale(args: Dict[str, Any], transforms_path: str) -> Dict[str, An
         return {"pruned": False, "reason": "empty_marker_ids"}
 
     normalized = {ensure_numeric_id(marker_id, "marker_id") for marker_id in marker_ids}
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    scene_map = dict(store["scenes"].get(scene_id, {}))
-    next_map = {k: v for k, v in scene_map.items() if k in normalized}
-    if next_map == scene_map:
-        return {"pruned": False, "reason": "no_changes"}
-    if next_map:
-        store["scenes"][scene_id] = next_map
-    else:
-        store["scenes"].pop(scene_id, None)
-    atomic_write_json(transforms_path, store)
+    with file_lock(transforms_path):
+        store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+        scene_map = dict(store["scenes"].get(scene_id, {}))
+        next_map = {k: v for k, v in scene_map.items() if k in normalized}
+        if next_map == scene_map:
+            return {"pruned": False, "reason": "no_changes"}
+        if next_map:
+            store["scenes"][scene_id] = next_map
+        else:
+            store["scenes"].pop(scene_id, None)
+        atomic_write_json(transforms_path, store)
     return {"pruned": True}
 
 
@@ -185,13 +225,14 @@ def mode_write_pending(args: Dict[str, Any], pending_path: str) -> Dict[str, Any
     if transform not in ("rotate_left_scale", "rotate_right_scale"):
         raise ValueError("transform must be rotate_left_scale or rotate_right_scale.")
 
-    pending = ensure_pending_store(load_json(pending_path, {}))
-    cleanup_stale_pending(pending)
-    pending[scene_id] = {
-        "transform": transform,
-        "created_at": now_utc().isoformat().replace("+00:00", "Z"),
-    }
-    atomic_write_json(pending_path, pending)
+    with file_lock(pending_path):
+        pending = ensure_pending_store(load_json(pending_path, {}))
+        cleanup_stale_pending(pending)
+        pending[scene_id] = {
+            "transform": transform,
+            "created_at": now_utc().isoformat().replace("+00:00", "Z"),
+        }
+        atomic_write_json(pending_path, pending)
     return {"staged": True}
 
 
@@ -199,28 +240,30 @@ def mode_claim_pending(args: Dict[str, Any], transforms_path: str, pending_path:
     scene_id = ensure_numeric_id(args.get("scene_id"), "scene_id")
     marker_id = ensure_numeric_id(args.get("marker_id"), "marker_id")
 
-    pending = ensure_pending_store(load_json(pending_path, {}))
-    cleanup_stale_pending(pending)
-    entry = pending.get(scene_id)
-    if not entry:
-        atomic_write_json(pending_path, pending)
-        return {"claimed": False}
+    with file_lock(transforms_path):
+        with file_lock(pending_path):
+            pending = ensure_pending_store(load_json(pending_path, {}))
+            cleanup_stale_pending(pending)
+            entry = pending.get(scene_id)
+            if not entry:
+                atomic_write_json(pending_path, pending)
+                return {"claimed": False}
 
-    transform = entry.get("transform")
-    if transform not in ("rotate_left_scale", "rotate_right_scale"):
-        pending.pop(scene_id, None)
-        atomic_write_json(pending_path, pending)
-        return {"claimed": False}
+            transform = entry.get("transform")
+            if transform not in ("rotate_left_scale", "rotate_right_scale"):
+                pending.pop(scene_id, None)
+                atomic_write_json(pending_path, pending)
+                return {"claimed": False}
 
-    store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
-    scene_map = dict(store["scenes"].get(scene_id, {}))
-    if len(scene_map) >= 500 and marker_id not in scene_map:
-        raise ValueError("max 500 transforms per scene.")
-    scene_map[marker_id] = transform
-    store["scenes"][scene_id] = scene_map
-    pending.pop(scene_id, None)
-    atomic_write_json(transforms_path, store)
-    atomic_write_json(pending_path, pending)
+            store = ensure_transform_store(load_json(transforms_path, {"version": 1, "scenes": {}}))
+            scene_map = dict(store["scenes"].get(scene_id, {}))
+            if len(scene_map) >= 500 and marker_id not in scene_map:
+                raise ValueError("max 500 transforms per scene.")
+            scene_map[marker_id] = transform
+            store["scenes"][scene_id] = scene_map
+            pending.pop(scene_id, None)
+            atomic_write_json(transforms_path, store)
+            atomic_write_json(pending_path, pending)
     return {"claimed": True}
 
 

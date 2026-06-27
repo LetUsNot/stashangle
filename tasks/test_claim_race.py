@@ -2,6 +2,7 @@
 import importlib.util
 import os
 import tempfile
+import threading
 
 
 def load_storage_module():
@@ -32,7 +33,40 @@ def run() -> None:
 
         mod.mode_remove_marker({"scene_id": "42", "marker_id": "101"}, transforms_path)
         mod.mode_remove_marker({"scene_id": "42", "marker_id": "101"}, transforms_path)
-        print("claim race and idempotent remove tests passed")
+
+        errors = []
+
+        def set_marker(marker_id: str, transform: str) -> None:
+            try:
+                mod.mode_set_marker(
+                    {"scene_id": "99", "marker_id": marker_id, "transform": transform},
+                    transforms_path,
+                )
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=set_marker, args=("201", "rotate_left_scale")),
+            threading.Thread(target=set_marker, args=("202", "rotate_right_scale")),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert not errors
+        concurrent_store = mod.load_json(transforms_path, {})
+        scene_map = concurrent_store["scenes"]["99"]
+        assert scene_map["201"] == "rotate_left_scale"
+        assert scene_map["202"] == "rotate_right_scale"
+
+        with open(transforms_path, "w", encoding="utf-8") as handle:
+            handle.write("{not valid json")
+        recovered = mod.load_json(transforms_path, {"version": 1, "scenes": {}})
+        assert recovered == {"version": 1, "scenes": {}}
+        assert not os.path.exists(transforms_path)
+
+        print("claim race, concurrent write, and corrupt json tests passed")
 
 
 if __name__ == "__main__":

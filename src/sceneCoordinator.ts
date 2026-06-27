@@ -1,19 +1,23 @@
 import { fetchScene, sceneFromId } from "./sceneClient";
+import { findSceneTabsRoot } from "./domTargets";
 import { destroyMarkerFormEnhancer, mountMarkerFormEnhancer } from "./markerFormEnhancerDom";
+import { destroyMarkerBadges, mountMarkerBadges, refreshMarkerBadges } from "./markerBadgesDom";
 import {
   destroyMarkerTransformController,
   mountMarkerTransformController,
   refreshMarkerTransformPlayback
 } from "./markerTransformControllerDom";
+import { teardownMarkerSubmitGuard } from "./markerFormSubmitGuard";
 import { getPluginApi } from "./pluginApi";
 import { SceneLike } from "./types";
 
-export const STASHANGLE_BUILD_ID = "0.1.11";
+export const STASHANGLE_BUILD_ID = __STASHANGLE_BUILD_ID__;
 
 let activeSceneId: string | null = null;
 let cachedScene: SceneLike | null = null;
 let syncTimer: number | undefined;
-let bodyObserver: MutationObserver | null = null;
+let sceneUiObserver: MutationObserver | null = null;
+let locationHandler: (() => void) | undefined;
 
 function parseSceneId(pathname: string): string | null {
   const match = pathname.match(/^\/scenes\/([^/?#]+)/);
@@ -30,6 +34,7 @@ function mountForScene(scene: SceneLike): void {
   cachedScene = scene;
   runAfterRender(() => {
     mountMarkerFormEnhancer(scene);
+    mountMarkerBadges(scene);
     if (document.getElementById("VideoJsPlayer")) {
       mountMarkerTransformController(scene);
     }
@@ -39,8 +44,8 @@ function mountForScene(scene: SceneLike): void {
 function refreshUiOnly(): void {
   if (!cachedScene) return;
   refreshMarkerTransformPlayback();
+  refreshMarkerBadges();
   runAfterRender(() => {
-    // Marker form enhancer owns its panel MutationObserver; body-driven refresh caused re-render loops.
     if (document.getElementById("VideoJsPlayer")) {
       mountMarkerTransformController(cachedScene!);
     }
@@ -51,6 +56,7 @@ function unmountAll(): void {
   cachedScene = null;
   runAfterRender(() => {
     destroyMarkerFormEnhancer();
+    destroyMarkerBadges();
     destroyMarkerTransformController();
   });
 }
@@ -63,16 +69,19 @@ async function syncScene(mode: "full" | "ui-only"): Promise<void> {
       activeSceneId = null;
       unmountAll();
     }
+    disconnectSceneUiObserver();
     return;
   }
 
   const sceneChanged = sceneId !== activeSceneId;
   if (sceneChanged) {
     destroyMarkerFormEnhancer();
+    destroyMarkerBadges();
     destroyMarkerTransformController();
     activeSceneId = sceneId;
     cachedScene = null;
     mode = "full";
+    connectSceneUiObserver();
   }
 
   if (mode === "ui-only" && cachedScene?.id === sceneId) {
@@ -95,17 +104,64 @@ function scheduleSync(mode: "full" | "ui-only" = "full"): void {
   }, 100);
 }
 
+function disconnectSceneUiObserver(): void {
+  sceneUiObserver?.disconnect();
+  sceneUiObserver = null;
+}
+
+function connectSceneUiObserver(): void {
+  disconnectSceneUiObserver();
+
+  const root = findSceneTabsRoot();
+  if (!root) return;
+
+  sceneUiObserver = new MutationObserver(() => {
+    if (!parseSceneId(window.location.pathname)) return;
+    if (document.getElementById("VideoJsPlayer")) {
+      scheduleSync("ui-only");
+    }
+  });
+  sceneUiObserver.observe(root, { childList: true, subtree: true });
+}
+
+export function stopSceneCoordinator(): void {
+  if (typeof syncTimer === "number") {
+    window.clearTimeout(syncTimer);
+    syncTimer = undefined;
+  }
+
+  disconnectSceneUiObserver();
+
+  if (locationHandler) {
+    try {
+      getPluginApi()?.Event?.removeEventListener?.("stash:location", locationHandler);
+    } catch {
+      // PluginApi may already be gone during teardown.
+    }
+    locationHandler = undefined;
+  }
+
+  destroyMarkerFormEnhancer();
+  destroyMarkerBadges();
+  destroyMarkerTransformController();
+  teardownMarkerSubmitGuard();
+  activeSceneId = null;
+  cachedScene = null;
+}
+
 export function startSceneCoordinator(): void {
   scheduleSync("full");
 
   const api = getPluginApi();
-  api.Event?.addEventListener?.("stash:location", () => scheduleSync("full"));
-
-  bodyObserver?.disconnect();
-  bodyObserver = new MutationObserver(() => {
+  locationHandler = () => {
+    scheduleSync("full");
     if (parseSceneId(window.location.pathname)) {
-      scheduleSync("ui-only");
+      connectSceneUiObserver();
     }
-  });
-  bodyObserver.observe(document.body, { childList: true, subtree: true });
+  };
+  api.Event?.addEventListener?.("stash:location", locationHandler);
+
+  if (parseSceneId(window.location.pathname)) {
+    connectSceneUiObserver();
+  }
 }

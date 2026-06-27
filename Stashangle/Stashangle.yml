@@ -9,7 +9,7 @@ ui:
   css:
     - ./dist/ui.css
   assets:
-    "/": .
+    marker-transforms.json: marker-transforms.json
 
 exec:
   - py
