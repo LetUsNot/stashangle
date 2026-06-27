@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { destroyMarkerFormEnhancer, mountMarkerFormEnhancer } from "../markerFormEnhancerDom";
 import { teardownMarkerSubmitGuard } from "../markerFormSubmitGuard";
 import * as storageClient from "../storageClient";
+import { SceneLike } from "../types";
 
 describe("markerFormEnhancerDom submit flows", () => {
   const setMarkerTransform = vi.spyOn(storageClient, "setMarkerTransform");
@@ -58,7 +59,7 @@ describe("markerFormEnhancerDom submit flows", () => {
   });
 
   it("submits the marker form only once per save intent", async () => {
-    const scene = { id: "7", scene_markers: [] as { id: string }[] };
+    const scene: SceneLike = { id: "7", scene_markers: [] };
     const form = document.querySelector("form") as HTMLFormElement;
     const submitSpy = vi.fn((event: Event) => {
       event.preventDefault();
